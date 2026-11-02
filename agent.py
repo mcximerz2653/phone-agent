@@ -20,7 +20,7 @@ from pathlib import Path
 # ─── Config ───────────────────────────────────────────────
 CONFIG_FILE = Path.home() / ".phone_agent_config.json"
 AUTOMATE_PORT = 8080
-ADB_DEVICE = None  # auto-detected
+ADB_DEVICE = "emulator-5554"  # Automate privileged ADB
 
 def load_config():
     if CONFIG_FILE.exists():

@@ -131,60 +131,43 @@ def press_home():
 
 # ─── Claude API ───────────────────────────────────────────
 def call_claude(api_key, screenshot_bytes, task, conversation_history):
-    """Call Claude API with screenshot for instructions"""
+    """Call Gemini API with screenshot for instructions"""
     img_b64 = base64.standard_b64encode(screenshot_bytes).decode()
 
-    # Detect auth type
-    headers = {"Content-Type": "application/json", "anthropic-version": "2023-06-01"}
-    if api_key.startswith("sk-ant-api"):
-        headers["x-api-key"] = api_key
-        url = "https://api.anthropic.com/v1/messages"
-    else:
-        # OAuth token
-        headers["Authorization"] = f"Bearer {api_key}"
-        url = "https://api.anthropic.com/v1/messages"
+    prompt = (
+        f"Current task: {task}\n\n"
+        "Look at this screenshot and tell me what action to take next. "
+        "The screen resolution is 1080x2400. Respond with a JSON action:\n"
+        "- To tap: {\"action\":\"tap\",\"x\":X,\"y\":Y,\"reason\":\"...\"}\n"
+        "- To swipe: {\"action\":\"swipe\",\"x1\":X1,\"y1\":Y1,\"x2\":X2,\"y2\":Y2}\n"
+        "- To type: {\"action\":\"type\",\"text\":\"...\"}\n"
+        "- To launch app: {\"action\":\"launch\",\"package\":\"com.example.app\"}\n"
+        "- To press back: {\"action\":\"back\"}\n"
+        "- To press home: {\"action\":\"home\"}\n"
+        "- If need password/sensitive input: {\"action\":\"ask_user\",\"prompt\":\"Please enter your Gmail password:\"}\n"
+        "- If task is done: {\"action\":\"done\",\"message\":\"...\"}\n"
+        "Reply with ONLY the JSON, no explanation."
+    )
 
-    messages = conversation_history + [
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": "image/png", "data": img_b64}
-                },
-                {
-                    "type": "text",
-                    "text": f"Current task: {task}\n\nLook at this screenshot and tell me what action to take next. Respond with a JSON action:\n"
-                            "- To tap: {{\"action\":\"tap\",\"x\":X,\"y\":Y,\"reason\":\"...\"}}\n"
-                            "- To swipe: {{\"action\":\"swipe\",\"x1\":X1,\"y1\":Y1,\"x2\":X2,\"y2\":Y2}}\n"
-                            "- To type: {{\"action\":\"type\",\"text\":\"...\"}}\n"
-                            "- To launch app: {{\"action\":\"launch\",\"package\":\"com.example.app\"}}\n"
-                            "- To press back: {{\"action\":\"back\"}}\n"
-                            "- To press home: {{\"action\":\"home\"}}\n"
-                            "- If need password/sensitive input: {{\"action\":\"ask_user\",\"prompt\":\"Please enter your Gmail password:\"}}\n"
-                            "- If task is done: {{\"action\":\"done\",\"message\":\"...\"}}\n"
-                            "Reply with ONLY the JSON, no explanation."
-                }
-            ]
-        }
-    ]
-
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
     body = {
-        "model": "claude-sonnet-4-6",
-        "max_tokens": 500,
-        "messages": messages
+        "contents": [{
+            "parts": [
+                {"inline_data": {"mime_type": "image/png", "data": img_b64}},
+                {"text": prompt}
+            ]
+        }]
     }
 
     try:
-        r = requests.post(url, headers=headers, json=body, timeout=30)
+        r = requests.post(url, json=body, timeout=30)
         r.raise_for_status()
-        content = r.json()["content"][0]["text"].strip()
-        # Extract JSON from response
+        content = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
         match = re.search(r'\{.*\}', content, re.DOTALL)
         if match:
             return json.loads(match.group())
     except Exception as e:
-        print(f"⚠️  Claude API error: {e}")
+        print(f"⚠️  Gemini API error: {e}")
     return None
 
 # ─── Main Agent Loop ──────────────────────────────────────

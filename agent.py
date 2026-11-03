@@ -47,9 +47,10 @@ def take_screenshot():
     try:
         from PIL import Image
         import io
-        img = Image.open(io.BytesIO(result.stdout))
+        img = Image.open(io.BytesIO(result.stdout)).convert("RGB")
         img = img.resize((540, int(img.height * 540 / img.width)))
-        tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+        tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False,
+                                          dir="/sdcard/Download")
         img.save(tmp.name, quality=70)
         return tmp.name
     except Exception as e:
@@ -71,11 +72,23 @@ def type_text(text):
 def press_key(keycode):
     adb("shell", "input", "keyevent", str(keycode))
 
+KNOWN_APPS = {
+    "com.google.android.gm": "com.google.android.gm/.ConversationListActivityGmail",
+    "com.android.chrome": "com.android.chrome/com.google.android.apps.chrome.Main",
+    "com.whatsapp": "com.whatsapp/.HomeActivity",
+    "com.android.settings": "com.android.settings/.Settings",
+    "com.google.android.youtube": "com.google.android.youtube/.HomeActivity",
+    "com.instagram.android": "com.instagram.android/.activity.MainTabActivity",
+    "com.facebook.katana": "com.facebook.katana/.LoginActivity",
+}
+
 def launch_app(package):
-    subprocess.run(["am", "start", "-a", "android.intent.action.MAIN",
-                   "-c", "android.intent.category.LAUNCHER",
-                   "--package", package], capture_output=True)
-    time.sleep(2)
+    if package in KNOWN_APPS:
+        subprocess.run(["am", "start", "-n", KNOWN_APPS[package]], capture_output=True)
+    else:
+        subprocess.run(["monkey", "-p", package, "-c",
+                       "android.intent.category.LAUNCHER", "1"], capture_output=True)
+    time.sleep(3)
 
 # ─── Ask Claude via CLI ───────────────────────────────────
 PROMPT_TEMPLATE = """You are controlling an Android phone. Current task: {task}

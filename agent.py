@@ -32,45 +32,33 @@ def adb(*args):
     return subprocess.run(cmd, capture_output=True)
 
 def ensure_adb():
-    """Reconnect ADB if needed — tries automatically via Automate intent"""
+    """Reconnect ADB — never kills ADB server (that drops Automate connection)"""
     r = subprocess.run(["adb", "devices"], capture_output=True, text=True)
-    if ADB_DEVICE in r.stdout and "device" in r.stdout:
+    if "device" in r.stdout:
         return True
 
-    print("🔌 Reconnecting ADB...")
-
-    # Try to wake Automate's privileged service via intent
-    subprocess.run([
-        "am", "startservice",
-        "-n", "com.llamalab.automate/.PrivilegedService"
-    ], capture_output=True)
-    time.sleep(2)
-
-    # Try restarting ADB server to pick up new connections
-    subprocess.run(["adb", "kill-server"], capture_output=True)
-    time.sleep(1)
+    print("🔌 ADB dropped — reconnecting via Automate...")
+    # Make sure ADB server is running (but DON'T kill it)
     subprocess.run(["adb", "start-server"], capture_output=True)
-    time.sleep(3)
-
-    r = subprocess.run(["adb", "devices"], capture_output=True, text=True)
-    if ADB_DEVICE in r.stdout:
-        print("✅ ADB reconnected")
-        return True
-
-    # Last resort — try TCP connections
-    for port in [5555, 5554]:
-        subprocess.run(["adb", "connect", f"localhost:{port}"], capture_output=True)
     time.sleep(2)
 
+    # Check again — Automate may reconnect on its own
     r = subprocess.run(["adb", "devices"], capture_output=True, text=True)
-    if ADB_DEVICE in r.stdout or "device" in r.stdout:
-        print("✅ ADB reconnected via TCP")
+    if "device" in r.stdout:
+        print("✅ ADB back")
         return True
 
-    print("⚠️  ADB disconnected — waiting 10s for Automate to reconnect...")
-    time.sleep(10)
-    r = subprocess.run(["adb", "devices"], capture_output=True, text=True)
-    return ADB_DEVICE in r.stdout
+    # Wait up to 30s for Automate to reconnect
+    print("⏳ Waiting for Automate privileged service...")
+    for _ in range(6):
+        time.sleep(5)
+        r = subprocess.run(["adb", "devices"], capture_output=True, text=True)
+        if "device" in r.stdout:
+            print("✅ ADB reconnected")
+            return True
+
+    print("❌ Go to Automate → Settings → Privileged service → ADB → GRANT")
+    return False
 
 # ─── Screenshot ───────────────────────────────────────────
 def take_screenshot():

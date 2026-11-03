@@ -98,6 +98,11 @@ def type_text(text):
     adb("shell", "input", "text", safe)
 
 def launch(package):
+    global _active_app
+    # Kill previous active app if switching
+    if _active_app and _active_app != package:
+        adb("shell", "am", "force-stop", _active_app)
+    _active_app = package
     if package in APPS:
         subprocess.run(["am","start","-n",APPS[package]], capture_output=True)
     else:
@@ -106,9 +111,9 @@ def launch(package):
                        "--package", package], capture_output=True)
     time.sleep(2.5)
 
-BACKGROUND_APPS = [
+MANAGED_APPS = [
     "com.facebook.katana",
-    "com.facebook.orca",       # Messenger
+    "com.facebook.orca",
     "com.instagram.android",
     "com.twitter.android",
     "com.shopee.my",
@@ -119,19 +124,34 @@ BACKGROUND_APPS = [
     "org.zwanoo.android.speedtest",
     "com.google.android.apps.messaging",
     "com.samsung.android.networkdiagnostic",
+    "com.whatsapp",
+    "com.google.android.gm",
+    "com.android.chrome",
+    "com.telegram.messenger",
+    "com.spotify.music",
 ]
 
+_active_app = None  # currently allowed app
+
+def _kill_background(exclude=None):
+    for pkg in MANAGED_APPS:
+        if pkg != exclude:
+            adb("shell", "am", "force-stop", pkg)
+
 def free_ram():
-    """Kill background apps to free RAM for agent session"""
+    """Kill all managed apps at startup"""
     print("🧹 Freeing RAM...")
-    killed = []
-    for pkg in BACKGROUND_APPS:
-        r = adb("shell", "am", "force-stop", pkg)
-        if r.returncode == 0:
-            killed.append(pkg.split(".")[-1])
-    # Also drop caches
+    _kill_background()
     adb("shell", "am", "kill-all")
-    print(f"  ✅ Freed: {', '.join(killed)}\n")
+    print("  ✅ RAM freed\n")
+
+def start_ram_manager():
+    """Background thread — re-kills apps every 30s, spares active app"""
+    def _loop():
+        while _keepalive_running:
+            time.sleep(30)
+            _kill_background(exclude=_active_app)
+    threading.Thread(target=_loop, daemon=True).start()
 
 def wake_screen():
     r = adb("shell", "dumpsys", "power")
@@ -229,7 +249,7 @@ def run_task(task):
         elif a == "type":    type_text(action["text"]); time.sleep(0.5)
         elif a == "launch":  launch(action["package"])
         elif a == "back":    back(); time.sleep(1)
-        elif a == "home":    home(); time.sleep(1)
+        elif a == "home":    home(); _active_app = None; time.sleep(1)
         elif a == "enter":   enter(); time.sleep(1)
 
     print("  ⚠️  Max steps reached\n")
@@ -248,6 +268,7 @@ def main():
 
     start_keepalive()
     free_ram()
+    start_ram_manager()
 
     # Single task mode
     if len(sys.argv) > 1:

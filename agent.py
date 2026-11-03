@@ -106,6 +106,33 @@ def launch(package):
                        "--package", package], capture_output=True)
     time.sleep(2.5)
 
+BACKGROUND_APPS = [
+    "com.facebook.katana",
+    "com.facebook.orca",       # Messenger
+    "com.instagram.android",
+    "com.twitter.android",
+    "com.shopee.my",
+    "com.microsoft.skydrive",
+    "com.microsoft.office.outlook",
+    "com.google.android.youtube",
+    "com.google.android.googlequicksearchbox",
+    "org.zwanoo.android.speedtest",
+    "com.google.android.apps.messaging",
+    "com.samsung.android.networkdiagnostic",
+]
+
+def free_ram():
+    """Kill background apps to free RAM for agent session"""
+    print("🧹 Freeing RAM...")
+    killed = []
+    for pkg in BACKGROUND_APPS:
+        r = adb("shell", "am", "force-stop", pkg)
+        if r.returncode == 0:
+            killed.append(pkg.split(".")[-1])
+    # Also drop caches
+    adb("shell", "am", "kill-all")
+    print(f"  ✅ Freed: {', '.join(killed)}\n")
+
 def wake_screen():
     r = adb("shell", "dumpsys", "power")
     if b"mWakefulness=Awake" not in r.stdout:
@@ -220,6 +247,7 @@ def main():
     print("✅ ADB ready")
 
     start_keepalive()
+    free_ram()
 
     # Single task mode
     if len(sys.argv) > 1:

@@ -1,238 +1,245 @@
 #!/usr/bin/env python3
 """
-Claude Phone Control Agent
-- No API key needed — uses claude CLI (already authenticated)
-- Screenshots via ADB
-- Taps/swipes via ADB
-- Pauses and asks user for passwords/sensitive input
+Claude Phone Agent — seamless phone control via ADB + Claude CLI
 """
 
-import os
-import sys
-import json
-import subprocess
-import tempfile
-import time
-import re
+import os, sys, json, subprocess, tempfile, time, re, threading, signal
 from pathlib import Path
+from PIL import Image
+import io
 
-ADB_DEVICE = "emulator-5554"
+# ─── ADB ──────────────────────────────────────────────────────────────────────
 
-# ─── ADB ──────────────────────────────────────────────────
-def get_device():
-    """Return first connected ADB device"""
+def _connected_device():
     r = subprocess.run(["adb", "devices"], capture_output=True, text=True)
     for line in r.stdout.splitlines()[1:]:
         if "\tdevice" in line:
             return line.split("\t")[0]
-    return ADB_DEVICE
-
-def adb(*args):
-    cmd = ["adb", "-s", get_device()] + list(args)
-    return subprocess.run(cmd, capture_output=True)
-
-def ensure_adb():
-    """Reconnect ADB — never kills ADB server (that drops Automate connection)"""
-    r = subprocess.run(["adb", "devices"], capture_output=True, text=True)
-    if "device" in r.stdout:
-        return True
-
-    print("🔌 ADB dropped — reconnecting via Automate...")
-    # Make sure ADB server is running (but DON'T kill it)
-    subprocess.run(["adb", "start-server"], capture_output=True)
-    time.sleep(2)
-
-    # Check again — Automate may reconnect on its own
-    r = subprocess.run(["adb", "devices"], capture_output=True, text=True)
-    if "device" in r.stdout:
-        print("✅ ADB back")
-        return True
-
-    # Wait up to 30s for Automate to reconnect
-    print("⏳ Waiting for Automate privileged service...")
-    for _ in range(6):
-        time.sleep(5)
-        r = subprocess.run(["adb", "devices"], capture_output=True, text=True)
-        if "device" in r.stdout:
-            print("✅ ADB reconnected")
-            return True
-
-    print("❌ Go to Automate → Settings → Privileged service → ADB → GRANT")
-    return False
-
-# ─── Screenshot ───────────────────────────────────────────
-def take_screenshot():
-    result = adb("exec-out", "screencap", "-p")
-    if result.returncode != 0 or not result.stdout:
-        return None
-    # Resize for faster processing
-    try:
-        from PIL import Image
-        import io
-        img = Image.open(io.BytesIO(result.stdout)).convert("RGB")
-        img = img.resize((540, int(img.height * 540 / img.width)))
-        tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False,
-                                          dir="/sdcard/Download")
-        img.save(tmp.name, quality=70)
-        return tmp.name
-    except Exception as e:
-        print(f"⚠️  Screenshot resize failed: {e}")
-        return None
-
-# ─── Actions ──────────────────────────────────────────────
-def tap(x, y):
-    adb("shell", "input", "tap", str(x), str(y))
-
-def swipe(x1, y1, x2, y2, duration=300):
-    adb("shell", "input", "swipe", str(x1), str(y1), str(x2), str(y2), str(duration))
-
-def type_text(text):
-    escaped = text.replace("\\", "\\\\").replace(" ", "%s").replace("'", "\\'") \
-                  .replace("\"", "\\\"").replace("&", "\\&")
-    adb("shell", "input", "text", escaped)
-
-def press_key(keycode):
-    adb("shell", "input", "keyevent", str(keycode))
-
-KNOWN_APPS = {
-    "com.google.android.gm": "com.google.android.gm/.ConversationListActivityGmail",
-    "com.android.chrome": "com.android.chrome/com.google.android.apps.chrome.Main",
-    "com.whatsapp": "com.whatsapp/.HomeActivity",
-    "com.android.settings": "com.android.settings/.Settings",
-    "com.google.android.youtube": "com.google.android.youtube/.HomeActivity",
-    "com.instagram.android": "com.instagram.android/.activity.MainTabActivity",
-    "com.facebook.katana": "com.facebook.katana/.LoginActivity",
-}
-
-def launch_app(package):
-    if package in KNOWN_APPS:
-        subprocess.run(["am", "start", "-n", KNOWN_APPS[package]], capture_output=True)
-    else:
-        subprocess.run(["monkey", "-p", package, "-c",
-                       "android.intent.category.LAUNCHER", "1"], capture_output=True)
-    time.sleep(3)
-
-# ─── Ask Claude via CLI ───────────────────────────────────
-PROMPT_TEMPLATE = """You are controlling an Android phone. Current task: {task}
-
-Look at this screenshot and decide the next action. The screen is 1080x2400 pixels.
-
-Reply with ONLY a single JSON object (no markdown, no explanation):
-- Tap:    {{"action":"tap","x":X,"y":Y,"reason":"why"}}
-- Swipe:  {{"action":"swipe","x1":X1,"y1":Y1,"x2":X2,"y2":Y2,"duration":300}}
-- Type:   {{"action":"type","text":"text to type"}}
-- Launch: {{"action":"launch","package":"com.package.name"}}
-- Back:   {{"action":"back"}}
-- Home:   {{"action":"home"}}
-- Enter:  {{"action":"enter"}}
-- Need password/sensitive input: {{"action":"ask_user","prompt":"what to ask user"}}
-- Done:   {{"action":"done","message":"what was accomplished"}}
-
-Common packages: Gmail=com.google.android.gm, Chrome=com.android.chrome, WhatsApp=com.whatsapp, Settings=com.android.settings"""
-
-def ask_claude(screenshot_path, task):
-    prompt = PROMPT_TEMPLATE.format(task=task)
-    prompt_with_image = f"{prompt}\n\n@{screenshot_path}"
-
-    result = subprocess.run(
-        ["claude", "-p", prompt_with_image],
-        capture_output=True, text=True, timeout=60
-    )
-    output = result.stdout.strip()
-    if not output:
-        output = result.stderr.strip()
-
-    # Extract JSON
-    match = re.search(r'\{[^{}]*\}', output, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group())
-        except json.JSONDecodeError:
-            pass
-
-    print(f"⚠️  Could not parse response: {output[:200]}")
     return None
 
-# ─── Main Loop ────────────────────────────────────────────
-def run(task):
-    print(f"\n🤖 Task: {task}")
-    print("   Ctrl+C to stop\n")
+def _reconnect():
+    """Reconnect ADB by restarting server — Automate auto-reconnects"""
+    subprocess.run(["adb", "kill-server"], capture_output=True)
+    time.sleep(1)
+    subprocess.run(["adb", "start-server"], capture_output=True)
+    for _ in range(10):
+        time.sleep(2)
+        if _connected_device():
+            return True
+    return False
 
-    if not ensure_adb():
-        return
+def adb(*args, check=False):
+    dev = _connected_device()
+    if not dev:
+        if not _reconnect():
+            return subprocess.CompletedProcess(args, 1, b"", b"no device")
+        dev = _connected_device()
+    return subprocess.run(["adb", "-s", dev] + list(args), capture_output=True)
 
-    max_steps = 30
-    for step in range(max_steps):
-        print(f"── Step {step+1} ──")
+# ─── Keepalive ────────────────────────────────────────────────────────────────
 
-        if not ensure_adb():
-            print("Waiting 5s...")
-            time.sleep(5)
+_keepalive_running = False
+
+def start_keepalive():
+    """Background thread that auto-reconnects ADB if it drops"""
+    global _keepalive_running
+    _keepalive_running = True
+    def _loop():
+        while _keepalive_running:
+            time.sleep(15)
+            if not _connected_device():
+                _reconnect()
+    t = threading.Thread(target=_loop, daemon=True)
+    t.start()
+
+# ─── Screenshot ───────────────────────────────────────────────────────────────
+
+def screenshot(path):
+    result = adb("exec-out", "screencap", "-p")
+    if not result.stdout:
+        return False
+    try:
+        img = Image.open(io.BytesIO(result.stdout)).convert("RGB")
+        w, h = img.size
+        img = img.resize((540, int(h * 540 / w)), Image.LANCZOS)
+        img.save(path, "JPEG", quality=65)
+        return True
+    except Exception:
+        return False
+
+# ─── Actions ──────────────────────────────────────────────────────────────────
+
+APPS = {
+    "com.google.android.gm":      "com.google.android.gm/.ConversationListActivityGmail",
+    "com.android.chrome":         "com.android.chrome/com.google.android.apps.chrome.Main",
+    "com.whatsapp":               "com.whatsapp/.HomeActivity",
+    "com.android.settings":       "com.android.settings/.Settings",
+    "com.google.android.youtube": "com.google.android.youtube/.HomeActivity",
+    "com.instagram.android":      "com.instagram.android/.activity.MainTabActivity",
+    "com.facebook.katana":        "com.facebook.katana/.LoginActivity",
+    "com.telegram.messenger":     "com.telegram.messenger/.DefaultIcon",
+    "com.twitter.android":        "com.twitter.android/.StartActivity",
+    "com.spotify.music":          "com.spotify.music/.MainActivity",
+}
+
+def tap(x, y):        adb("shell", "input", "tap", str(x), str(y))
+def key(code):        adb("shell", "input", "keyevent", str(code))
+def back():           key(4)
+def home():           key(3)
+def enter():          key(66)
+def swipe(x1,y1,x2,y2,ms=300):
+    adb("shell","input","swipe",str(x1),str(y1),str(x2),str(y2),str(ms))
+
+def type_text(text):
+    safe = text.replace("\\","\\\\").replace(" ","%s") \
+               .replace("'","\\'").replace("\"","\\\"") \
+               .replace("&","\\&").replace("<","\\<").replace(">","\\>") \
+               .replace(";","\\;").replace("|","\\|")
+    adb("shell", "input", "text", safe)
+
+def launch(package):
+    if package in APPS:
+        subprocess.run(["am","start","-n",APPS[package]], capture_output=True)
+    else:
+        subprocess.run(["am","start","-a","android.intent.action.MAIN",
+                       "-c","android.intent.category.LAUNCHER",
+                       "--package", package], capture_output=True)
+    time.sleep(2.5)
+
+def wake_screen():
+    r = adb("shell", "dumpsys", "power")
+    if b"mWakefulness=Awake" not in r.stdout:
+        key(26)  # power button
+        time.sleep(0.5)
+        swipe(540, 1600, 540, 800, 300)  # swipe to unlock
+        time.sleep(0.5)
+
+# ─── Vision ───────────────────────────────────────────────────────────────────
+
+PROMPT = """You control an Android phone (1080x2400 screen). Task: {task}
+
+Previous actions: {history}
+
+Look at the screenshot. Reply with ONE JSON action only — no explanation, no markdown:
+{{"action":"tap","x":X,"y":Y,"reason":"..."}}
+{{"action":"swipe","x1":X1,"y1":Y1,"x2":X2,"y2":Y2,"duration":300}}
+{{"action":"type","text":"..."}}
+{{"action":"launch","package":"com.package.name"}}
+{{"action":"back"}}  {{"action":"home"}}  {{"action":"enter"}}
+{{"action":"ask_user","prompt":"what to ask"}}
+{{"action":"done","message":"what was done"}}
+
+Known packages: Gmail=com.google.android.gm WhatsApp=com.whatsapp Chrome=com.android.chrome Settings=com.android.settings YouTube=com.google.android.youtube Instagram=com.instagram.android Telegram=com.telegram.messenger Twitter=com.twitter.android Spotify=com.spotify.music"""
+
+def think(img_path, task, history):
+    prompt = PROMPT.format(task=task, history=", ".join(history[-5:]) if history else "none")
+    r = subprocess.run(
+        ["claude", "-p", f"{prompt}\n\n@{img_path}"],
+        capture_output=True, text=True, timeout=60
+    )
+    text = (r.stdout or r.stderr).strip()
+    m = re.search(r'\{[^{}]*\}', text, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group())
+        except:
+            pass
+    return None
+
+# ─── Agent ────────────────────────────────────────────────────────────────────
+
+def run_task(task):
+    print(f"\n🤖 {task}")
+    wake_screen()
+
+    img_path = str(Path("/sdcard/Download/.agent_screen.jpg"))
+    history = []
+    last_actions = []  # loop detection
+    step = 0
+
+    while step < 25:
+        step += 1
+
+        if not screenshot(img_path):
+            print("  📸 retrying...")
+            time.sleep(2)
             continue
 
-        print("📸 Screenshot...")
-        img_path = take_screenshot()
-        if not img_path:
-            print("⚠️  Screenshot failed, retrying...")
-            time.sleep(3)
-            continue
-
-        print("🧠 Thinking...")
-        action = ask_claude(img_path, task)
-        os.unlink(img_path)  # cleanup temp file
-
+        action = think(img_path, task, history)
         if not action:
             time.sleep(2)
             continue
 
         a = action.get("action", "")
-        print(f"▶  {json.dumps(action)}")
+        reason = action.get("reason", action.get("message", ""))
+        print(f"  ▶ {a}" + (f" — {reason}" if reason else ""))
+
+        # Loop detection
+        sig = json.dumps(action, sort_keys=True)
+        last_actions.append(sig)
+        if len(last_actions) > 4 and len(set(last_actions[-4:])) == 1:
+            print("  ⚠️  Stuck in loop — trying home")
+            home(); time.sleep(1)
+            last_actions.clear()
+            continue
+
+        history.append(f"{a}({reason})")
 
         if a == "done":
-            print(f"\n✅ {action.get('message','Done!')}")
-            break
+            print(f"  ✅ {action.get('message','Done')}\n")
+            return True
 
         elif a == "ask_user":
-            print(f"\n🔐 {action.get('prompt','Input needed:')}")
-            user_input = input("You: ").strip()
+            prompt = action.get("prompt", "Input needed:")
+            print(f"\n  🔐 {prompt}")
+            user_input = input("  > ").strip()
             type_text(user_input)
             time.sleep(0.3)
-            press_key(66)  # Enter
+            enter()
 
-        elif a == "tap":
-            tap(action["x"], action["y"])
-            time.sleep(1.5)
+        elif a == "tap":     tap(action["x"], action["y"]); time.sleep(1.2)
+        elif a == "swipe":   swipe(action["x1"],action["y1"],action["x2"],action["y2"],action.get("duration",300)); time.sleep(1)
+        elif a == "type":    type_text(action["text"]); time.sleep(0.5)
+        elif a == "launch":  launch(action["package"])
+        elif a == "back":    back(); time.sleep(1)
+        elif a == "home":    home(); time.sleep(1)
+        elif a == "enter":   enter(); time.sleep(1)
 
-        elif a == "swipe":
-            swipe(action["x1"], action["y1"], action["x2"], action["y2"],
-                  action.get("duration", 300))
-            time.sleep(1)
+    print("  ⚠️  Max steps reached\n")
+    return False
 
-        elif a == "type":
-            type_text(action["text"])
-            time.sleep(0.5)
+# ─── Main ─────────────────────────────────────────────────────────────────────
 
-        elif a == "launch":
-            launch_app(action["package"])
+def main():
+    # Ensure ADB is up
+    if not _connected_device():
+        print("🔌 Connecting ADB...")
+        if not _reconnect():
+            print("❌ ADB failed. Open Automate → Settings → Privileged service → ADB → GRANT")
+            sys.exit(1)
+    print("✅ ADB ready")
 
-        elif a == "back":
-            press_key(4)
-            time.sleep(1)
+    start_keepalive()
 
-        elif a == "home":
-            press_key(3)
-            time.sleep(1)
+    # Single task mode
+    if len(sys.argv) > 1:
+        run_task(" ".join(sys.argv[1:]))
+        return
 
-        elif a == "enter":
-            press_key(66)
-            time.sleep(1)
-
-        time.sleep(0.5)
-    else:
-        print("\n⚠️  Max steps reached")
+    # Interactive mode
+    print("📱 Phone agent ready. Type a task (or 'exit'):\n")
+    while True:
+        try:
+            task = input("You: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nBye!")
+            break
+        if not task:
+            continue
+        if task.lower() in ("exit", "quit", "q"):
+            break
+        run_task(task)
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python3 agent.py \"open Gmail\"")
-        sys.exit(1)
-    run(" ".join(sys.argv[1:]))
+    signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
+    main()

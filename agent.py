@@ -178,11 +178,28 @@ Look at the screenshot. Reply with ONE JSON action only — no explanation, no m
 
 Known packages: Gmail=com.google.android.gm WhatsApp=com.whatsapp Chrome=com.android.chrome Settings=com.android.settings YouTube=com.google.android.youtube Instagram=com.instagram.android Telegram=com.telegram.messenger Twitter=com.twitter.android Spotify=com.spotify.music"""
 
+def _has_internet():
+    r = subprocess.run(["ping", "-c", "1", "-W", "3", "8.8.8.8"],
+                       capture_output=True)
+    return r.returncode == 0
+
 def think(img_path, task, history):
     prompt = PROMPT.format(task=task, history=", ".join(history[-5:]) if history else "none")
+
+    # Wait for internet if offline
+    retries = 0
+    while not _has_internet():
+        retries += 1
+        if retries == 1:
+            print("  📡 Waiting for internet (WiFi or mobile data)...")
+        time.sleep(5)
+        if retries > 24:  # 2 min max wait
+            print("  ❌ No internet — cannot think")
+            return None
+
     r = subprocess.run(
         ["claude", "-p", f"{prompt}\n\n@{img_path}"],
-        capture_output=True, text=True, timeout=60
+        capture_output=True, text=True, timeout=90
     )
     text = (r.stdout or r.stderr).strip()
     m = re.search(r'\{[^{}]*\}', text, re.DOTALL)

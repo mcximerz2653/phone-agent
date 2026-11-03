@@ -19,24 +19,58 @@ from pathlib import Path
 ADB_DEVICE = "emulator-5554"
 
 # ─── ADB ──────────────────────────────────────────────────
+def get_device():
+    """Return first connected ADB device"""
+    r = subprocess.run(["adb", "devices"], capture_output=True, text=True)
+    for line in r.stdout.splitlines()[1:]:
+        if "\tdevice" in line:
+            return line.split("\t")[0]
+    return ADB_DEVICE
+
 def adb(*args):
-    cmd = ["adb", "-s", ADB_DEVICE] + list(args)
+    cmd = ["adb", "-s", get_device()] + list(args)
     return subprocess.run(cmd, capture_output=True)
 
 def ensure_adb():
-    """Reconnect ADB if needed"""
+    """Reconnect ADB if needed — tries automatically via Automate intent"""
     r = subprocess.run(["adb", "devices"], capture_output=True, text=True)
-    if ADB_DEVICE in r.stdout:
+    if ADB_DEVICE in r.stdout and "device" in r.stdout:
         return True
-    # Try reconnect
+
     print("🔌 Reconnecting ADB...")
-    subprocess.run(["adb", "connect", "localhost:5555"], capture_output=True)
+
+    # Try to wake Automate's privileged service via intent
+    subprocess.run([
+        "am", "startservice",
+        "-n", "com.llamalab.automate/.PrivilegedService"
+    ], capture_output=True)
+    time.sleep(2)
+
+    # Try restarting ADB server to pick up new connections
+    subprocess.run(["adb", "kill-server"], capture_output=True)
+    time.sleep(1)
+    subprocess.run(["adb", "start-server"], capture_output=True)
+    time.sleep(3)
+
     r = subprocess.run(["adb", "devices"], capture_output=True, text=True)
     if ADB_DEVICE in r.stdout:
         print("✅ ADB reconnected")
         return True
-    print("❌ ADB not connected. Open Automate → Settings → 'Restart ADB in TCP/IP mode'")
-    return False
+
+    # Last resort — try TCP connections
+    for port in [5555, 5554]:
+        subprocess.run(["adb", "connect", f"localhost:{port}"], capture_output=True)
+    time.sleep(2)
+
+    r = subprocess.run(["adb", "devices"], capture_output=True, text=True)
+    if ADB_DEVICE in r.stdout or "device" in r.stdout:
+        print("✅ ADB reconnected via TCP")
+        return True
+
+    print("⚠️  ADB disconnected — waiting 10s for Automate to reconnect...")
+    time.sleep(10)
+    r = subprocess.run(["adb", "devices"], capture_output=True, text=True)
+    return ADB_DEVICE in r.stdout
 
 # ─── Screenshot ───────────────────────────────────────────
 def take_screenshot():

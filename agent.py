@@ -104,11 +104,10 @@ def launch(package):
         adb("shell", "am", "force-stop", _active_app)
     _active_app = package
     if package in APPS:
-        subprocess.run(["am","start","-n",APPS[package]], capture_output=True)
+        adb("shell", "am", "start", "-n", APPS[package])
     else:
-        subprocess.run(["am","start","-a","android.intent.action.MAIN",
-                       "-c","android.intent.category.LAUNCHER",
-                       "--package", package], capture_output=True)
+        adb("shell", "am", "start", "-a", "android.intent.action.MAIN",
+            "-c", "android.intent.category.LAUNCHER", "--package", package)
     time.sleep(2.5)
 
 MANAGED_APPS = [
